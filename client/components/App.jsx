@@ -1,18 +1,71 @@
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../contexts/AuthContext.jsx";
 import logo from "/assets/openai-logomark.svg";
 import samanthaImage from "/assets/samantha.jpg";
+import Login from "./Login";
+import AdminDashboard from "./AdminDashboard";
 import EventLog from "./EventLog";
 import SessionControls from "./SessionControls";
 import ToolPanel from "./ToolPanel";
+import SessionMetrics from "./SessionMetrics";
+import LimitAlerts from "./LimitAlerts";
+import UserDashboard from "./UserDashboard";
+import SessionHistory from "./SessionHistory";
+import UserProfile from "./UserProfile";
+
+function LogoutButton() {
+  const { logout } = useAuth();
+  return (
+    <button
+      onClick={logout}
+      className="text-xs md:text-sm text-indigo-600 hover:text-indigo-800"
+    >
+      Sair
+    </button>
+  );
+}
 
 export default function App() {
+  const { isAuthenticated, isAdmin, loading, user } = useAuth();
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [events, setEvents] = useState([]);
   const [dataChannel, setDataChannel] = useState(null);
   const peerConnection = useRef(null);
   const audioElement = useRef(null);
+  const [sessionStartTime, setSessionStartTime] = useState(null);
+  
+  // Estados para métricas
+  const [currentSessionId, setCurrentSessionId] = useState(null);
+  const userId = user?.id;
+  
+  // Navegação
+  const [currentView, setCurrentView] = useState('session'); // session, dashboard, history, profile
 
   async function startSession() {
+    // Gerar session_id único
+    const newSessionId = crypto.randomUUID();
+    setCurrentSessionId(newSessionId);
+    setSessionStartTime(new Date());
+
+    // Criar sessão no backend
+    try {
+      const token = localStorage.getItem('token');
+      await fetch("/api/sessions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          session_id: newSessionId,
+          model: "gpt-4o-mini-realtime-preview",
+        }),
+      });
+    } catch (error) {
+      console.error("Error creating session in backend:", error);
+      // Continuar mesmo se falhar (para desenvolvimento)
+    }
+
     // Get a session token for OpenAI Realtime API
     const tokenResponse = await fetch("/token");
     const data = await tokenResponse.json();
@@ -59,7 +112,23 @@ export default function App() {
   }
 
   // Stop current session, clean up peer connection and data channel
-  function stopSession() {
+  async function stopSession() {
+    // Finalizar sessão no backend
+    if (currentSessionId) {
+      try {
+        const token = localStorage.getItem('token');
+        await fetch(`/api/sessions/${currentSessionId}/finalize`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+          },
+        });
+      } catch (error) {
+        console.error("Error finalizing session in backend:", error);
+      }
+      setCurrentSessionId(null);
+    }
+
     if (dataChannel) {
       dataChannel.close();
     }
@@ -77,7 +146,12 @@ export default function App() {
     setIsSessionActive(false);
     setDataChannel(null);
     peerConnection.current = null;
+    setSessionStartTime(null);
   }
+  
+  const handleLimitExceeded = (type) => {
+    alert(`Limite de ${type === 'tokens' ? 'tokens' : 'sessões'} excedido. Não é possível iniciar uma nova sessão.`);
+  };
 
   // Send a message to the model
   function sendClientEvent(message) {
@@ -125,13 +199,44 @@ export default function App() {
   useEffect(() => {
     if (dataChannel) {
       // Append new server events to the list
-      dataChannel.addEventListener("message", (e) => {
+      dataChannel.addEventListener("message", async (e) => {
         const event = JSON.parse(e.data);
         if (!event.timestamp) {
           event.timestamp = new Date().toLocaleTimeString();
         }
 
         setEvents((prev) => [event, ...prev]);
+
+        // Capturar tokens quando response.done for recebido
+        if (event.type === "response.done" && event.response?.usage && currentSessionId) {
+          const usage = event.response.usage;
+          const inputTokens = usage.input_tokens || 0;
+          const outputTokens = usage.output_tokens || 0;
+
+          // Atualizar métricas locais (estimativa de custo: $0.15/1M input, $0.60/1M output)
+          const cost = (inputTokens / 1000000) * 0.15 + (outputTokens / 1000000) * 0.60;
+          if (window.updateSessionMetrics) {
+            window.updateSessionMetrics(inputTokens, outputTokens, cost);
+          }
+
+          // Enviar métricas para o backend
+          try {
+            const token = localStorage.getItem('token');
+            await fetch(`/api/sessions/${currentSessionId}/metrics`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                input_tokens: inputTokens,
+                output_tokens: outputTokens,
+              }),
+            });
+          } catch (error) {
+            console.error("Error sending metrics to backend:", error);
+          }
+        }
       });
 
       // Set session active when the data channel is opened
@@ -157,20 +262,253 @@ export default function App() {
         }, 500);
       });
     }
-  }, [dataChannel]);
+  }, [dataChannel, currentSessionId, userId]);
 
+  // Mostrar loading enquanto verifica autenticação
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Carregando...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Mostrar login se não autenticado
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
+  // Mostrar dashboard admin se for admin
+  if (isAdmin) {
+    return <AdminDashboard />;
+  }
+
+  // Interface normal para alunos
+  // Mostrar diferentes views baseado na navegação
+  if (currentView === 'dashboard') {
+    return (
+      <>
+        <nav className="absolute top-0 left-0 right-0 h-12 md:h-16 flex items-center justify-between z-20 bg-white/95 backdrop-blur-sm">
+          <div className="flex items-center gap-2 md:gap-4 w-full m-2 md:m-4 pb-2 border-0 border-b border-solid border-gray-200">
+            <img style={{ width: "20px" }} className="md:w-6" src={logo} />
+            <h1 className="text-sm md:text-base font-semibold">realtime console</h1>
+            <div className="ml-auto flex items-center gap-2 md:gap-4">
+              <nav className="flex gap-2 md:gap-4">
+                <button
+                  onClick={() => setCurrentView('session')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'session' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Sessão
+                </button>
+                <button
+                  onClick={() => setCurrentView('dashboard')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'dashboard' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Dashboard
+                </button>
+                <button
+                  onClick={() => setCurrentView('history')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'history' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Histórico
+                </button>
+                <button
+                  onClick={() => setCurrentView('profile')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'profile' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Perfil
+                </button>
+              </nav>
+              <span className="text-xs md:text-sm text-gray-600 hidden md:inline">{user?.name}</span>
+              <LogoutButton />
+            </div>
+          </div>
+        </nav>
+        <main className="absolute top-12 md:top-16 left-0 right-0 bottom-0 overflow-y-auto">
+          <UserDashboard />
+        </main>
+      </>
+    );
+  }
+
+  if (currentView === 'history') {
+    return (
+      <>
+        <nav className="absolute top-0 left-0 right-0 h-12 md:h-16 flex items-center justify-between z-20 bg-white/95 backdrop-blur-sm">
+          <div className="flex items-center gap-2 md:gap-4 w-full m-2 md:m-4 pb-2 border-0 border-b border-solid border-gray-200">
+            <img style={{ width: "20px" }} className="md:w-6" src={logo} />
+            <h1 className="text-sm md:text-base font-semibold">realtime console</h1>
+            <div className="ml-auto flex items-center gap-2 md:gap-4">
+              <nav className="flex gap-2 md:gap-4">
+                <button
+                  onClick={() => setCurrentView('session')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'session' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Sessão
+                </button>
+                <button
+                  onClick={() => setCurrentView('dashboard')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'dashboard' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Dashboard
+                </button>
+                <button
+                  onClick={() => setCurrentView('history')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'history' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Histórico
+                </button>
+                <button
+                  onClick={() => setCurrentView('profile')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'profile' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Perfil
+                </button>
+              </nav>
+              <span className="text-xs md:text-sm text-gray-600 hidden md:inline">{user?.name}</span>
+              <LogoutButton />
+            </div>
+          </div>
+        </nav>
+        <main className="absolute top-12 md:top-16 left-0 right-0 bottom-0 overflow-y-auto">
+          <SessionHistory />
+        </main>
+      </>
+    );
+  }
+
+  if (currentView === 'profile') {
+    return (
+      <>
+        <nav className="absolute top-0 left-0 right-0 h-12 md:h-16 flex items-center justify-between z-20 bg-white/95 backdrop-blur-sm">
+          <div className="flex items-center gap-2 md:gap-4 w-full m-2 md:m-4 pb-2 border-0 border-b border-solid border-gray-200">
+            <img style={{ width: "20px" }} className="md:w-6" src={logo} />
+            <h1 className="text-sm md:text-base font-semibold">realtime console</h1>
+            <div className="ml-auto flex items-center gap-2 md:gap-4">
+              <nav className="flex gap-2 md:gap-4">
+                <button
+                  onClick={() => setCurrentView('session')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'session' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Sessão
+                </button>
+                <button
+                  onClick={() => setCurrentView('dashboard')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'dashboard' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Dashboard
+                </button>
+                <button
+                  onClick={() => setCurrentView('history')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'history' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Histórico
+                </button>
+                <button
+                  onClick={() => setCurrentView('profile')}
+                  className={`text-xs md:text-sm px-2 py-1 rounded ${
+                    currentView === 'profile' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Perfil
+                </button>
+              </nav>
+              <span className="text-xs md:text-sm text-gray-600 hidden md:inline">{user?.name}</span>
+              <LogoutButton />
+            </div>
+          </div>
+        </nav>
+        <main className="absolute top-12 md:top-16 left-0 right-0 bottom-0 overflow-y-auto">
+          <UserProfile />
+        </main>
+      </>
+    );
+  }
+
+  // View de sessão (padrão)
   return (
     <>
-      <nav className="absolute top-0 left-0 right-0 h-12 md:h-16 flex items-center z-20 bg-white/95 backdrop-blur-sm">
+      <nav className="absolute top-0 left-0 right-0 h-12 md:h-16 flex items-center justify-between z-20 bg-white/95 backdrop-blur-sm">
         <div className="flex items-center gap-2 md:gap-4 w-full m-2 md:m-4 pb-2 border-0 border-b border-solid border-gray-200">
           <img style={{ width: "20px" }} className="md:w-6" src={logo} />
           <h1 className="text-sm md:text-base font-semibold">realtime console</h1>
+          <div className="ml-auto flex items-center gap-2 md:gap-4">
+            <nav className="flex gap-2 md:gap-4">
+              <button
+                onClick={() => setCurrentView('session')}
+                className={`text-xs md:text-sm px-2 py-1 rounded ${
+                  currentView === 'session' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Sessão
+              </button>
+              <button
+                onClick={() => setCurrentView('dashboard')}
+                className={`text-xs md:text-sm px-2 py-1 rounded ${
+                  currentView === 'dashboard' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Dashboard
+              </button>
+              <button
+                onClick={() => setCurrentView('history')}
+                className={`text-xs md:text-sm px-2 py-1 rounded ${
+                  currentView === 'history' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Histórico
+              </button>
+              <button
+                onClick={() => setCurrentView('profile')}
+                className={`text-xs md:text-sm px-2 py-1 rounded ${
+                  currentView === 'profile' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Perfil
+              </button>
+            </nav>
+            <span className="text-xs md:text-sm text-gray-600 hidden md:inline">{user?.name}</span>
+            <LogoutButton />
+          </div>
         </div>
       </nav>
       <main className="absolute top-12 md:top-16 left-0 right-0 bottom-0">
         <section className="absolute top-0 left-0 right-0 md:right-[380px] bottom-0 flex relative">
           {/* Container com imagem de fundo */}
           <section className="absolute top-0 left-0 right-0 bottom-24 md:bottom-32 px-2 md:px-4 overflow-y-auto relative">
+            {/* Alertas de Limites */}
+            {!isSessionActive && <LimitAlerts onLimitExceeded={handleLimitExceeded} />}
+            
+            {/* Métricas da Sessão */}
+            {isSessionActive && sessionStartTime && (
+              <SessionMetrics sessionId={currentSessionId} startTime={sessionStartTime} />
+            )}
+            
             {/* Imagem da professora em tela cheia */}
             <div className="fixed inset-0 top-12 md:top-16 right-0 md:right-[380px] bottom-24 md:bottom-32 pointer-events-none z-0">
               <img 

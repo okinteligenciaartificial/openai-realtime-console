@@ -3,8 +3,18 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import "dotenv/config";
 
+// Importar rotas
+import authRouter from "./routes/auth.js";
+import usersRouter from "./routes/users.js";
+import teachersRouter from "./routes/teachers.js";
+import plansRouter from "./routes/plans.js";
+import subscriptionsRouter from "./routes/subscriptions.js";
+import sessionsRouter from "./routes/sessions.js";
+import metricsRouter from "./routes/metrics.js";
+
 const app = express();
 app.use(express.text());
+app.use(express.json()); // Para APIs JSON
 const port = process.env.PORT || 3000;
 const apiKey = process.env.OPENAI_API_KEY;
 
@@ -398,6 +408,23 @@ app.get("/token", async (req, res) => {
     console.error("Token generation error:", error);
     res.status(500).json({ error: "Failed to generate token" });
   }
+});
+
+// Registrar rotas da API
+app.use("/api/auth", authRouter);
+app.use("/api/users", usersRouter);
+app.use("/api/teachers", teachersRouter);
+app.use("/api/plans", plansRouter);
+app.use("/api/subscriptions", subscriptionsRouter);
+app.use("/api/sessions", sessionsRouter);
+app.use("/api/metrics", metricsRouter);
+
+// Middleware de tratamento de erros
+app.use((err, req, res, next) => {
+  console.error("Error:", err);
+  res.status(err.status || 500).json({
+    error: err.message || "Internal server error",
+  });
 });
 
 // Render the React client
