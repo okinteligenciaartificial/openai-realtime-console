@@ -10,12 +10,29 @@ export async function saveMessageController(req, res) {
     const { role, content, messageType, eventType, eventData, additionalAttributes } = req.body;
     const userId = req.userId;
 
+    console.log('[saveMessageController] Received request:', {
+      sessionId,
+      userId,
+      role,
+      contentLength: content?.length,
+      contentPreview: content?.substring(0, 100),
+      messageType,
+      eventType,
+      hasEventData: !!eventData,
+    });
+
     // Validações
     if (!role || !['user', 'assistant', 'system'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role. Must be user, assistant, or system' });
     }
 
     if (!content || typeof content !== 'string' || content.trim().length === 0) {
+      console.warn('[saveMessageController] ⚠️ Invalid content:', {
+        hasContent: !!content,
+        contentType: typeof content,
+        contentLength: content?.length,
+        contentPreview: content?.substring(0, 100),
+      });
       return res.status(400).json({ error: 'Content is required and must be a non-empty string' });
     }
 
@@ -27,6 +44,13 @@ export async function saveMessageController(req, res) {
       additionalAttributes: additionalAttributes || {},
     });
 
+    console.log('[saveMessageController] ✅ Message saved successfully:', {
+      messageId: message.id,
+      sequenceNumber: message.sequence_number,
+      role,
+      contentLength: content.trim().length,
+    });
+
     res.status(201).json({
       success: true,
       message: {
@@ -36,7 +60,7 @@ export async function saveMessageController(req, res) {
       },
     });
   } catch (error) {
-    console.error('[saveMessageController] Error:', error);
+    console.error('[saveMessageController] ❌ Error:', error);
     
     if (error.message.includes('Session not found')) {
       return res.status(404).json({ error: error.message });

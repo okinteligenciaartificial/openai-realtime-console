@@ -272,6 +272,14 @@ export async function getConversationHistory(sessionId, userId, options = {}) {
       sessionId,
       dbSessionId,
       count: result.rows.length,
+      messages: result.rows.map(m => ({
+        id: m.id,
+        role: m.role,
+        contentLength: m.content?.length,
+        contentPreview: m.content?.substring(0, 50),
+        eventType: m.event_type,
+        createdAt: m.created_at,
+      })),
     });
 
     return result.rows;

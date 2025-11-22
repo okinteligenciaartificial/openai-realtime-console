@@ -22,6 +22,7 @@ export default function ConversationSession() {
   const audioContextRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const sessionIdRef = useRef(null); // Ref para manter sessionId atualizado no closure
+  const savedMessagesRef = useRef(new Set()); // Ref para rastrear mensagens já salvas
 
   useEffect(() => {
     return () => {
@@ -32,6 +33,73 @@ export default function ConversationSession() {
     };
   }, []);
 
+  // IMPORTANTE: Monitorar mensagens e garantir que todas as mensagens do usuário sejam salvas
+  useEffect(() => {
+    console.log('[ConversationSession] 🔍 useEffect triggered - checking messages:', {
+      sessionId,
+      messagesCount: messages.length,
+      hasSessionId: !!sessionId,
+      messages: messages.map(m => ({ type: m.type, textPreview: m.text?.substring(0, 30) })),
+    });
+
+    if (!sessionId) {
+      console.log('[ConversationSession] ⚠️ useEffect: No sessionId, skipping');
+      return;
+    }
+
+    if (messages.length === 0) {
+      console.log('[ConversationSession] ⚠️ useEffect: No messages, skipping');
+      return;
+    }
+
+    // Processar apenas mensagens do usuário que ainda não foram salvas
+    messages.forEach((msg, idx) => {
+      if (msg.type === 'user' && msg.text && msg.text.trim()) {
+        const messageKey = `${msg.text.trim()}-${msg.timestamp?.getTime() || idx}`;
+        
+        // Verificar se já foi salva
+        if (!savedMessagesRef.current.has(messageKey)) {
+          console.log('[ConversationSession] 🔄🔄🔄 Auto-saving user message from state:', {
+            sessionId,
+            textPreview: msg.text.substring(0, 50),
+            textLength: msg.text.length,
+            messageKey,
+            timestamp: msg.timestamp,
+            savedCount: savedMessagesRef.current.size,
+          });
+
+          // Marcar como salva ANTES de tentar salvar (para evitar duplicatas)
+          savedMessagesRef.current.add(messageKey);
+
+          conversationsAPI.saveMessage(sessionId, {
+            role: 'user',
+            content: msg.text.trim(),
+            messageType: 'transcription',
+            eventType: 'auto-saved-from-state',
+            eventData: { timestamp: msg.timestamp, source: 'state' },
+          }).then((response) => {
+            console.log('[ConversationSession] ✅✅✅ User message auto-saved from state successfully!', response);
+          }).catch((err) => {
+            console.error('[ConversationSession] ❌❌❌ Error auto-saving user message from state:', {
+              error: err,
+              message: err.message,
+              stack: err.stack,
+              sessionId,
+              textPreview: msg.text.substring(0, 50),
+            });
+            // Remover da lista de salvas se falhou, para tentar novamente
+            savedMessagesRef.current.delete(messageKey);
+          });
+        } else {
+          console.log('[ConversationSession] ⏭️ Message already saved, skipping:', {
+            messageKey,
+            textPreview: msg.text.substring(0, 30),
+          });
+        }
+      }
+    });
+  }, [messages, sessionId]);
+
   const startSession = async () => {
     try {
       setIsConnecting(true);
@@ -39,14 +107,20 @@ export default function ConversationSession() {
 
       // Criar sessão no backend (o backend fará a verificação de limites)
       // O backend permite sessões sem assinatura em desenvolvimento
-      const session_id = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const session_id = `realtime-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const session = await sessionsAPI.create({
         session_id,
         model: 'gpt-4o-mini-realtime-preview',
       });
 
-      setSessionId(session.id || session_id);
+      // IMPORTANTE: Atualizar sessionIdRef ANTES de configurar o dataChannel
+      // para garantir que o sessionId esteja disponível quando as transcrições chegarem
+      const initialSessionId = session.id || session_id;
+      setSessionId(initialSessionId);
+      sessionIdRef.current = initialSessionId; // Atualizar ref imediatamente
       setStartTime(new Date());
+      
+      console.log('[ConversationSession] ✅ Initial sessionId set:', initialSessionId);
 
       // Obter token do servidor (via API do backend)
       const tokenData = await realtimeAPI.getToken();
@@ -85,15 +159,45 @@ export default function ConversationSession() {
       const dataChannel = pc.createDataChannel('events');
       dataChannelRef.current = dataChannel;
 
-      // Atualizar sessionIdRef com o sessionId inicial
-      sessionIdRef.current = sessionId;
-      console.log('[ConversationSession] Initial sessionIdRef set to:', sessionId);
+      // IMPORTANTE: sessionIdRef já foi atualizado acima, mas vamos garantir
+      console.log('[ConversationSession] Data channel created. sessionIdRef.current:', sessionIdRef.current);
 
       dataChannel.onmessage = async (event) => {
         try {
           const data = JSON.parse(event.data);
-          // Usar sessionIdRef.current que será atualizado quando sessionId mudar
-          const currentSessionId = sessionIdRef.current || sessionId;
+          // IMPORTANTE: Sempre usar sessionIdRef.current que é atualizado imediatamente
+          // Não usar sessionId do closure porque pode estar desatualizado
+          const currentSessionId = sessionIdRef.current;
+          
+          // Log para debug - verificar se sessionIdRef está sendo usado corretamente
+          if (!currentSessionId) {
+            console.warn('[ConversationSession] ⚠️ No sessionId available! sessionIdRef.current:', sessionIdRef.current);
+          }
+          
+          // Log detalhado para TODOS os eventos - especialmente para identificar eventos de transcrição do usuário
+          if (data.type && (
+            data.type.includes('transcript') || 
+            data.type.includes('transcription') ||
+            data.type.includes('input_audio') ||
+            data.type.includes('output_audio') ||
+            data.type.includes('conversation') ||
+            data.type.includes('item')
+          )) {
+            console.log('[ConversationSession] 📥 POTENTIAL TRANSCRIPTION EVENT:', {
+              type: data.type,
+              hasTranscript: !!data.transcript,
+              transcript: data.transcript?.substring(0, 100),
+              hasItem: !!data.item,
+              itemType: data.item?.type,
+              itemRole: data.item?.role,
+              itemContent: data.item?.content,
+              hasText: !!data.text,
+              text: data.text?.substring(0, 100),
+              keys: Object.keys(data),
+              fullData: JSON.stringify(data, null, 2).substring(0, 1000),
+              sessionId: currentSessionId,
+            });
+          }
           
           console.log('[ConversationSession] 📥 Event received:', {
             type: data.type,
@@ -146,31 +250,133 @@ export default function ConversationSession() {
           }
 
           // Processar mensagens de áudio/texto (exibição + salvar no backend)
+          // IMPORTANTE: Verificar múltiplos formatos de eventos de transcrição do usuário
+          // A API Realtime pode enviar transcrições do usuário em diferentes eventos
+          let userText = null;
+          let isUserTranscription = false;
+          let userTranscriptionEventType = null;
+          
+          // Verificar TODOS os possíveis eventos de transcrição do usuário
           if (data.type === 'conversation.item.input_audio_transcription.completed') {
-            const text = data.transcript;
-            setMessages((prev) => [...prev, { type: 'user', text, timestamp: new Date() }]);
+            userText = data.transcript;
+            isUserTranscription = true;
+            userTranscriptionEventType = data.type;
+          } else if (data.type === 'conversation.item.created' && data.item?.role === 'user') {
+            // Transcrição pode estar em item.content
+            userText = data.item?.content?.[0]?.transcript || data.item?.content?.[0]?.text;
+            isUserTranscription = true;
+            userTranscriptionEventType = data.type;
+          } else if (data.type === 'input_audio_buffer.committed') {
+            // Transcrição pode estar em transcript ou text
+            userText = data.transcript || data.text;
+            isUserTranscription = true;
+            userTranscriptionEventType = data.type;
+          } else if (data.type === 'conversation.item.input_audio_transcription.delta') {
+            // Transcrição incremental - vamos acumular em uma variável temporária
+            // Mas por enquanto, vamos apenas logar e esperar pelo .completed
+            console.log('[ConversationSession] 📝 User transcription delta received:', {
+              delta: data.delta,
+              eventType: data.type,
+              sessionId: currentSessionId,
+            });
+          } else if (data.type && data.type.includes('input') && data.type.includes('audio')) {
+            // Qualquer evento relacionado a input_audio pode conter transcrição
+            console.log('[ConversationSession] 🔍 Checking input_audio event for transcription:', {
+              type: data.type,
+              hasTranscript: !!data.transcript,
+              transcript: data.transcript?.substring(0, 100),
+              hasText: !!data.text,
+              text: data.text?.substring(0, 100),
+              hasItem: !!data.item,
+              itemContent: data.item?.content,
+              keys: Object.keys(data),
+            });
+            
+            // Tentar extrair texto de vários lugares
+            userText = data.transcript || data.text || data.item?.content?.[0]?.transcript || data.item?.content?.[0]?.text;
+            if (userText && userText.trim()) {
+              isUserTranscription = true;
+              userTranscriptionEventType = data.type;
+            }
+          }
+          
+          // Se encontrou transcrição do usuário, salvar
+          if (isUserTranscription && userText && userText.trim()) {
+            console.log('[ConversationSession] 💬✅ User transcription FOUND:', {
+              sessionId: currentSessionId,
+              hasSessionId: !!currentSessionId,
+              textLength: userText?.length,
+              textPreview: userText?.substring(0, 50),
+              eventType: userTranscriptionEventType,
+            });
+            
+            const newMessage = { type: 'user', text: userText, timestamp: new Date() };
+            console.log('[ConversationSession] 📝 Adding user message to state:', {
+              textPreview: userText.substring(0, 50),
+              timestamp: newMessage.timestamp,
+            });
+            setMessages((prev) => [...prev, newMessage]);
             
             // Salvar mensagem do usuário no backend
-            if (currentSessionId && text && text.trim()) {
-              // Garantir que o eventData tenha o usage correto
+            if (currentSessionId) {
               const eventDataWithUsage = {
                 ...data,
                 usage: extractedUsage || data.usage,
               };
               
+              console.log('[ConversationSession] 💾💾💾 SAVING USER TRANSCRIPTION:', {
+                sessionId: currentSessionId,
+                textLength: userText.trim().length,
+                textPreview: userText.trim().substring(0, 50),
+                eventType: userTranscriptionEventType,
+              });
+              
               conversationsAPI.saveMessage(currentSessionId, {
                 role: 'user',
-                content: text.trim(),
+                content: userText.trim(),
                 messageType: 'transcription',
-                eventType: data.type,
+                eventType: userTranscriptionEventType,
                 eventData: eventDataWithUsage,
+              }).then((response) => {
+                console.log('[ConversationSession] ✅✅✅ User message saved successfully!', response);
               }).catch((err) => {
-                console.error('[ConversationSession] Error saving user message:', err);
+                console.error('[ConversationSession] ❌❌❌ Error saving user message:', {
+                  error: err,
+                  message: err.message,
+                  stack: err.stack,
+                  sessionId: currentSessionId,
+                });
+              });
+            } else {
+              console.error('[ConversationSession] ❌❌❌ Cannot save user message - NO SESSION ID!', {
+                sessionId: currentSessionId,
+                sessionIdRef: sessionIdRef.current,
               });
             }
+          } else if (isUserTranscription && !userText) {
+            // Evento de transcrição do usuário recebido mas sem texto
+            console.log('[ConversationSession] ⚠️⚠️⚠️ User transcription event received but no text found:', {
+              eventType: userTranscriptionEventType || data.type,
+              hasTranscript: !!data.transcript,
+              transcript: data.transcript,
+              hasText: !!data.text,
+              text: data.text,
+              hasItem: !!data.item,
+              itemRole: data.item?.role,
+              itemContent: data.item?.content,
+              dataKeys: Object.keys(data),
+              fullData: JSON.stringify(data, null, 2).substring(0, 1000),
+            });
           } else if (data.type === 'conversation.item.output_audio_transcription.completed') {
             const text = data.transcript;
             setMessages((prev) => [...prev, { type: 'assistant', text, timestamp: new Date() }]);
+            
+            console.log('[ConversationSession] 💬 Assistant transcription received:', {
+              sessionId: currentSessionId,
+              hasSessionId: !!currentSessionId,
+              textLength: text?.length,
+              textPreview: text?.substring(0, 50),
+            });
             
             // Salvar mensagem do assistente no backend
             if (currentSessionId && text && text.trim()) {
@@ -180,14 +386,27 @@ export default function ConversationSession() {
                 usage: extractedUsage || data.usage,
               };
               
+              console.log('[ConversationSession] 💾 Saving assistant transcription:', {
+                sessionId: currentSessionId,
+                textLength: text.trim().length,
+              });
+              
               conversationsAPI.saveMessage(currentSessionId, {
                 role: 'assistant',
                 content: text.trim(),
                 messageType: 'transcription',
                 eventType: data.type,
                 eventData: eventDataWithUsage,
+              }).then(() => {
+                console.log('[ConversationSession] ✅ Assistant message saved successfully');
               }).catch((err) => {
-                console.error('[ConversationSession] Error saving assistant message:', err);
+                console.error('[ConversationSession] ❌ Error saving assistant message:', err);
+              });
+            } else {
+              console.warn('[ConversationSession] ⚠️ Cannot save assistant message:', {
+                hasSessionId: !!currentSessionId,
+                hasText: !!(text && text.trim()),
+                sessionId: currentSessionId,
               });
             }
           } else if (data.type === 'response.text.delta') {
@@ -277,8 +496,47 @@ export default function ConversationSession() {
                 textPreview: text?.substring(0, 50),
               });
             }
-          } else if (data.type === 'response.audio_transcript.delta') {
-            // Transcrição de áudio do assistente (incremental)
+          } else if (data.type === 'response.output_audio_transcript.done') {
+            // IMPORTANTE: Este é o evento que contém a transcrição completa do assistente
+            const text = data.transcript;
+            console.log('[ConversationSession] 💬 Assistant audio transcript done:', {
+              sessionId: currentSessionId,
+              hasSessionId: !!currentSessionId,
+              textLength: text?.length,
+              textPreview: text?.substring(0, 50),
+            });
+            
+            if (text && text.trim()) {
+              setMessages((prev) => [...prev, { type: 'assistant', text, timestamp: new Date() }]);
+              
+              // Salvar mensagem do assistente no backend
+              if (currentSessionId) {
+                const eventDataWithUsage = {
+                  ...data,
+                  usage: extractedUsage || data.usage,
+                };
+                
+                console.log('[ConversationSession] 💾 Saving assistant audio transcript:', {
+                  sessionId: currentSessionId,
+                  textLength: text.trim().length,
+                });
+                
+                conversationsAPI.saveMessage(currentSessionId, {
+                  role: 'assistant',
+                  content: text.trim(),
+                  messageType: 'transcription',
+                  eventType: data.type,
+                  eventData: eventDataWithUsage,
+                }).then(() => {
+                  console.log('[ConversationSession] ✅ Assistant audio transcript saved successfully');
+                }).catch((err) => {
+                  console.error('[ConversationSession] ❌ Error saving assistant audio transcript:', err);
+                });
+              }
+            }
+          } else if (data.type === 'response.output_audio_transcript.delta') {
+            // Transcrição de áudio do assistente (incremental) - apenas para exibição em tempo real
+            // Não salvar aqui, esperar pelo .done
             console.log('[ConversationSession] Audio transcript delta:', data.delta);
           } else if (data.type === 'session.updated') {
             console.log('[ConversationSession] Session updated:', data);
@@ -416,13 +674,27 @@ export default function ConversationSession() {
       const answerSdp = typeof response === 'string' ? response : response.sdp;
       const backendSessionId = typeof response === 'object' ? response.sessionId : null;
       
-      // Usar o sessionId do backend se disponível (é o que está no banco)
+      // IMPORTANTE: Atualizar o sessionIdRef ANTES de processar qualquer evento
+      // Isso garante que as transcrições sejam salvas com o sessionId correto
+      // O backend retorna o sessionId no header X-Session-Id, que é extraído pelo realtimeAPI.createSession
+      const finalSessionId = backendSessionId || sessionIdRef.current || initialSessionId;
+      
       if (backendSessionId) {
-        console.log('[ConversationSession] Using backend sessionId:', backendSessionId);
+        console.log('[ConversationSession] ✅ Using backend sessionId from header:', backendSessionId);
         setSessionId(backendSessionId);
-        // Atualizar o sessionIdRef para que o dataChannel.onmessage use o valor correto
+        // Atualizar o sessionIdRef IMEDIATAMENTE para que o dataChannel.onmessage use o valor correto
         sessionIdRef.current = backendSessionId;
-        console.log('[ConversationSession] Updated sessionIdRef to:', backendSessionId);
+        console.log('[ConversationSession] ✅ Updated sessionIdRef to:', backendSessionId);
+      } else {
+        // Se não recebeu sessionId do backend, usar o sessionId inicial que já foi definido
+        console.warn('[ConversationSession] ⚠️ No backend sessionId received, using initial sessionId:', sessionIdRef.current);
+        // sessionIdRef.current já foi atualizado acima, não precisa atualizar novamente
+      }
+      
+      // Garantir que o sessionIdRef está definido antes de continuar
+      if (!sessionIdRef.current) {
+        console.error('[ConversationSession] ❌ CRITICAL: sessionIdRef.current is null! This will prevent messages from being saved.');
+        sessionIdRef.current = initialSessionId; // Fallback de emergência
       }
       
       await pc.setRemoteDescription({
@@ -494,6 +766,7 @@ export default function ConversationSession() {
       setStartTime(null);
       setEvents([]);
       setMessages([]);
+      savedMessagesRef.current.clear(); // Limpar mensagens salvas ao encerrar sessão
     } catch (err) {
       console.error('Error stopping session:', err);
       setError(err.message || 'Erro ao encerrar sessão');
@@ -518,18 +791,35 @@ export default function ConversationSession() {
         })
       );
 
-      setMessages((prev) => [...prev, { type: 'user', text, timestamp: new Date() }]);
+      const userTextMessage = { type: 'user', text, timestamp: new Date() };
+      console.log('[ConversationSession] 📝 Adding user TEXT message to state:', {
+        textPreview: text.substring(0, 50),
+        timestamp: userTextMessage.timestamp,
+        sessionId,
+      });
+      setMessages((prev) => [...prev, userTextMessage]);
       
       // Salvar mensagem de texto do usuário no backend
       if (sessionId && text && text.trim()) {
+        console.log('[ConversationSession] 💾 Saving user TEXT message immediately:', {
+          sessionId,
+          textPreview: text.substring(0, 50),
+        });
         conversationsAPI.saveMessage(sessionId, {
           role: 'user',
           content: text.trim(),
           messageType: 'text',
           eventType: 'conversation.item.create',
           eventData: { type: 'message', role: 'user', content: text },
+        }).then(() => {
+          console.log('[ConversationSession] ✅✅✅ User TEXT message saved successfully!');
         }).catch((err) => {
-          console.error('[ConversationSession] Error saving user text message:', err);
+          console.error('[ConversationSession] ❌❌❌ Error saving user TEXT message:', err);
+        });
+      } else {
+        console.warn('[ConversationSession] ⚠️ Cannot save user TEXT message:', {
+          hasSessionId: !!sessionId,
+          hasText: !!(text && text.trim()),
         });
       }
     } catch (err) {

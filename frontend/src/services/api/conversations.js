@@ -11,6 +11,15 @@ export const conversationsAPI = {
    */
   async saveMessage(sessionId, messageData) {
     try {
+      console.log('[conversationsAPI] 💾 Saving message:', {
+        sessionId,
+        role: messageData.role,
+        contentLength: messageData.content?.length,
+        contentPreview: messageData.content?.substring(0, 100),
+        messageType: messageData.messageType,
+        eventType: messageData.eventType,
+      });
+      
       const response = await request(`/conversations/${sessionId}/messages`, {
         method: 'POST',
         body: JSON.stringify({
@@ -22,9 +31,21 @@ export const conversationsAPI = {
           additionalAttributes: messageData.additionalAttributes || {},
         }),
       });
+      
+      console.log('[conversationsAPI] ✅ Message saved successfully:', {
+        sessionId,
+        role: messageData.role,
+        response,
+      });
+      
       return response;
     } catch (error) {
-      console.error('[conversationsAPI] Error saving message:', error);
+      console.error('[conversationsAPI] ❌ Error saving message:', {
+        sessionId,
+        role: messageData.role,
+        error: error.message,
+        errorDetails: error,
+      });
       throw error;
     }
   },
