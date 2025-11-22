@@ -1,0 +1,41 @@
+{
+  "name": "transition2english-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Backend API for Transition2English - Multi-tenant metrics system",
+  "main": "server.js",
+  "scripts": {
+    "dev": "NODE_ENV=development nodemon server.js",
+    "start": "NODE_ENV=production node server.js",
+    "test": "NODE_ENV=test vitest run",
+    "test:watch": "NODE_ENV=test vitest",
+    "test:coverage": "NODE_ENV=test vitest run --coverage",
+    "lint": "echo 'Linting not configured yet'",
+    "validate": "node scripts/validate-env.js",
+    "migrate": "node ../scripts/run-migrations.js",
+    "migrate:test": "NODE_ENV=test node ../scripts/run-migrations.js"
+  },
+  "keywords": [
+    "api",
+    "backend",
+    "postgresql",
+    "multi-tenant"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "form-data": "^4.0.5",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.13",
+    "nodemon": "^3.1.10",
+    "supertest": "^7.0.0",
+    "vitest": "^4.0.13"
+  }
+}

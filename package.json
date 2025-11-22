@@ -12,10 +12,10 @@
     "create-admin": "node scripts/create-admin-user.js"
   },
   "dependencies": {
+    "bcrypt": "^5.1.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "history": "^5.3.0",
-    "bcrypt": "^5.1.1",
     "jsonwebtoken": "^9.0.2",
     "minipass": "^7.0.4",
     "pg": "^8.11.3",
@@ -29,12 +29,13 @@
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.22",
     "jsdom": "^27.2.0",
     "nodemon": "^3.1.10",
-    "postcss": "^8.4.31",
+    "postcss": "^8.5.6",
     "postcss-nesting": "^12.0.2",
     "postcss-preset-env": "^7.7.1",
-    "tailwindcss": "^3.4.1",
+    "tailwindcss": "^3.4.18",
     "vite": "^5.0.2",
     "vitest": "^4.0.13"
   }

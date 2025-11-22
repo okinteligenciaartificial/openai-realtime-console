@@ -1,6 +1,6 @@
-import pool from '../config/database.js';
+import pool from '../backend/src/config/database.js';
 import 'dotenv/config';
-import { hashPassword } from '../services/auth.js';
+import { hashPassword } from '../backend/src/services/auth.js';
 
 async function createAdminUser() {
   try {

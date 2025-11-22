@@ -3,27 +3,41 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import "dotenv/config";
 
-// Importar rotas
-import authRouter from "./routes/auth.js";
-import usersRouter from "./routes/users.js";
-import teachersRouter from "./routes/teachers.js";
-import plansRouter from "./routes/plans.js";
-import subscriptionsRouter from "./routes/subscriptions.js";
-import sessionsRouter from "./routes/sessions.js";
-import metricsRouter from "./routes/metrics.js";
+// Importar app do backend
+import backendApp from "./backend/src/app.js";
 
 const app = express();
-app.use(express.text());
-app.use(express.json()); // Para APIs JSON
 const port = process.env.PORT || 3000;
 const apiKey = process.env.OPENAI_API_KEY;
 
-// Configure Vite middleware for React client
+// Usar backend app (ele já tem as rotas /api configuradas)
+app.use(backendApp);
+
+// Configure Vite middleware for React client (frontend)
+// IMPORTANTE: O Vite middleware deve ser configurado ANTES da rota catch-all
+// para processar corretamente arquivos estáticos (.jsx, .js, .css, etc.)
 const vite = await createViteServer({
-  server: { middlewareMode: true },
+  root: "./frontend",
+  configFile: "./frontend/vite.config.js",
+  server: { 
+    middlewareMode: true,
+  },
   appType: "custom",
 });
-app.use(vite.middlewares);
+
+// Usar o Vite middleware - ele processa arquivos estáticos e HMR
+// O Vite middleware processa todas as requisições que não são /api
+// IMPORTANTE: O Vite middleware deve ser executado ANTES da rota catch-all
+// Usar o middleware do Vite diretamente - ele já tem lógica para processar arquivos
+app.use((req, res, next) => {
+  // Não processar rotas de API com o Vite
+  if (req.url.startsWith("/api")) {
+    return next();
+  }
+  // Deixar o Vite processar todas as outras requisições (incluindo arquivos estáticos)
+  // O Vite middleware automaticamente processa arquivos .jsx, .js, .css, etc.
+  vite.middlewares(req, res, next);
+});
 
 const sessionConfig = JSON.stringify({
   session: {
@@ -410,14 +424,51 @@ app.get("/token", async (req, res) => {
   }
 });
 
-// Registrar rotas da API
-app.use("/api/auth", authRouter);
-app.use("/api/users", usersRouter);
-app.use("/api/teachers", teachersRouter);
-app.use("/api/plans", plansRouter);
-app.use("/api/subscriptions", subscriptionsRouter);
-app.use("/api/sessions", sessionsRouter);
-app.use("/api/metrics", metricsRouter);
+// Rotas específicas do servidor (OpenAI Realtime)
+// Estas rotas não estão no backend porque são específicas do servidor principal
+
+// Render the React client (frontend)
+// IMPORTANTE: Esta rota catch-all deve ser a ÚLTIMA, após o Vite middleware
+// O Vite middleware processa arquivos estáticos primeiro, então esta rota só processa rotas HTML
+app.use("*", async (req, res, next) => {
+  const url = req.originalUrl;
+
+  // Não processar rotas de API aqui
+  if (url.startsWith("/api")) {
+    return next();
+  }
+
+  // Não processar arquivos estáticos aqui - o Vite middleware já processa
+  // Se é um arquivo estático, deixar o Vite processar (não fazer nada, apenas passar)
+  if (url.match(/\.(js|jsx|ts|tsx|css|json|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)$/)) {
+    // Se chegou aqui e é um arquivo estático, significa que o Vite não processou
+    // Deixar passar para o próximo middleware (que não existe, então retornará 404)
+    return next();
+  }
+
+  // Apenas processar rotas HTML (não são arquivos estáticos)
+  // O Vite middleware já processou arquivos estáticos antes desta rota
+  try {
+    // Ler o HTML original
+    let html = fs.readFileSync("./frontend/index.html", "utf-8");
+    
+    // Transformar o HTML com o Vite (isso transforma os caminhos dos módulos)
+    // O transformIndexHtml adiciona o @vite/client e transforma os caminhos dos scripts
+    html = await vite.transformIndexHtml(url, html);
+    
+    // Renderizar o componente React no servidor
+    const { render } = await vite.ssrLoadModule("./frontend/src/entry-server.jsx");
+    const appHtml = await render(url);
+    
+    // Substituir o placeholder pelo HTML renderizado
+    html = html.replace(`<!--ssr-outlet-->`, appHtml?.html);
+    
+    res.status(200).set({ "Content-Type": "text/html" }).end(html);
+  } catch (e) {
+    vite.ssrFixStacktrace(e);
+    next(e);
+  }
+});
 
 // Middleware de tratamento de erros
 app.use((err, req, res, next) => {
@@ -425,25 +476,6 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({
     error: err.message || "Internal server error",
   });
-});
-
-// Render the React client
-app.use("*", async (req, res, next) => {
-  const url = req.originalUrl;
-
-  try {
-    const template = await vite.transformIndexHtml(
-      url,
-      fs.readFileSync("./client/index.html", "utf-8"),
-    );
-    const { render } = await vite.ssrLoadModule("./client/entry-server.jsx");
-    const appHtml = await render(url);
-    const html = template.replace(`<!--ssr-outlet-->`, appHtml?.html);
-    res.status(200).set({ "Content-Type": "text/html" }).end(html);
-  } catch (e) {
-    vite.ssrFixStacktrace(e);
-    next(e);
-  }
 });
 
 app.listen(port, () => {

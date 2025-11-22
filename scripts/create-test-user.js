@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import pool from '../config/database.js';
+import pool from '../backend/src/config/database.js';
 
 async function createTestUser() {
   try {
